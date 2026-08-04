@@ -1,0 +1,23 @@
+[project]
+name = "ableton12-mcp"
+version = "0.2.0"
+description = "Full-control MCP server for Ableton Live 12 (devices, parameters, mixer, clips, scenes, transport, arrangement capture)"
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+    "mcp[cli]>=1.3.0",
+    "numpy>=1.24",
+    "soundfile>=0.12",
+    "scipy>=1.10",
+    "pyloudnorm>=0.1.1",
+]
+
+[project.scripts]
+ableton12 = "ableton12_mcp.server:main"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/ableton12_mcp"]

@@ -1,0 +1,20 @@
+# --- Python / uv ---
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+*.egg-info/
+build/
+dist/
+.pytest_cache/
+.ruff_cache/
+
+# --- captures / scratch audio (record_audio writes to the temp dir, but just in case) ---
+*.wav
+*.aif
+*.aiff
+*.mp3
+*.flac
+
+# --- macOS ---
+.DS_Store

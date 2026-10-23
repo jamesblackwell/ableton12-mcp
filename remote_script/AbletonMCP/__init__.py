@@ -27,7 +27,7 @@ try:
 except ImportError:
     import queue  # Python 3
 
-__version__ = "0.4.0"
+__version__ = "0.5.0"
 
 DEFAULT_PORT = 9877
 HOST = "localhost"
@@ -303,6 +303,12 @@ class AbletonMCP(ControlSurface):
             # diagnostics
             "health": self._health,
             "reload_script": self._reload_script,
+            "describe_device": self._describe_device,
+            "simpler_load_sample": self._simpler_load_sample,
+            "get_simpler": self._get_simpler,
+            "set_simpler": self._set_simpler,
+            "simpler_slices": self._simpler_slices,
+            "simpler_sample_action": self._simpler_sample_action,
         }
 
     # ----------------------------------------------------------- validators
@@ -988,6 +994,172 @@ class AbletonMCP(ControlSurface):
         if params.get("scale_mode") is not None:
             s.scale_mode = bool(params["scale_mode"])
         return self._get_song_scale(params)
+
+    def _describe_device(self, params):
+        """Diagnostic: list a device's public LOM attributes (and its sample's,
+        for Simpler) with current values where cheap to read."""
+        device = self._device_on(self._track_spec(params), params["device_index"])
+
+        def dump(obj):
+            out = {}
+            for name in dir(obj):
+                if name.startswith("_") or name.endswith("_has_listener") or "listener" in name:
+                    continue
+                try:
+                    val = getattr(obj, name)
+                except Exception as e:
+                    out[name] = "<error %s>" % e
+                    continue
+                if callable(val):
+                    out[name] = "<method>"
+                elif isinstance(val, (int, float, str, bool)) or val is None:
+                    out[name] = val
+                else:
+                    out[name] = "<%s>" % type(val).__name__
+            return out
+
+        result = {"class_name": device.class_name, "device": dump(device)}
+        sample = getattr(device, "sample", None)
+        if sample is not None:
+            result["sample"] = dump(sample)
+        return result
+
+    def _simpler_load_sample(self, params):
+        device = self._device_on(self._track_spec(params), params["device_index"])
+        if not hasattr(device, "replace_sample"):
+            raise ValueError("Device '%s' is not a Simpler" % device.name)
+        device.replace_sample(str(params["path"]))
+        sample = device.sample
+        return {"loaded": sample is not None,
+                "file_path": getattr(sample, "file_path", None) if sample else None}
+
+    SIMPLER_MODES = ("Classic", "One-Shot", "Slicing")
+    SLICING_STYLES = ("Transient", "Beat", "Region", "Manual")
+    SLICE_PLAYBACK = ("Mono", "Poly", "Thru")
+
+    def _simpler(self, params):
+        device = self._device_on(self._track_spec(params), params["device_index"])
+        if not hasattr(device, "playback_mode") or not hasattr(device, "replace_sample"):
+            raise ValueError("Device '%s' is not a Simpler" % device.name)
+        return device
+
+    def _pick_name(self, names, value, what):
+        if isinstance(value, str):
+            lowered = [n.lower() for n in names]
+            if value.strip().lower() not in lowered:
+                raise ValueError("%s must be one of %s" % (what, names))
+            return lowered.index(value.strip().lower())
+        return int(value)
+
+    def _get_simpler(self, params):
+        device = self._simpler(params)
+        out = {
+            "device_name": device.name,
+            "playback_mode": self.SIMPLER_MODES[device.playback_mode],
+            "slicing_playback_mode": self.SLICE_PLAYBACK[device.slicing_playback_mode],
+            "voices": device.voices, "retrigger": bool(device.retrigger),
+            "multi_sample_mode": bool(device.multi_sample_mode), "sample": None,
+        }
+        sample = device.sample
+        if sample is not None:
+            sr = float(sample.sample_rate) or 44100.0
+            slices = list(sample.slices)
+            out["sample"] = {
+                "file_path": sample.file_path, "length_samples": sample.length,
+                "length_seconds": round(sample.length / sr, 3), "sample_rate": sr,
+                "start_marker": sample.start_marker, "end_marker": sample.end_marker,
+                "warping": bool(sample.warping), "warp_mode": self.WARP_MODES[sample.warp_mode]
+                if 0 <= sample.warp_mode < len(self.WARP_MODES) else sample.warp_mode,
+                "gain": sample.gain, "gain_display": sample.gain_display_string(),
+                "slicing_style": self.SLICING_STYLES[sample.slicing_style],
+                "slicing_sensitivity": sample.slicing_sensitivity,
+                "slicing_beat_division": sample.slicing_beat_division,
+                "slicing_region_count": sample.slicing_region_count,
+                "slice_count": len(slices),
+                # In Slicing mode slice i plays from MIDI note 36 + i (C1 upward).
+                "slices": [{"index": i, "note": 36 + i, "sample_time": int(t),
+                            "seconds": round(t / sr, 3)} for i, t in enumerate(slices)],
+            }
+        return out
+
+    def _set_simpler(self, params):
+        device = self._simpler(params)
+        if params.get("playback_mode") is not None:
+            device.playback_mode = self._pick_name(self.SIMPLER_MODES, params["playback_mode"], "playback_mode")
+        if params.get("slicing_playback_mode") is not None:
+            device.slicing_playback_mode = self._pick_name(
+                self.SLICE_PLAYBACK, params["slicing_playback_mode"], "slicing_playback_mode")
+        if params.get("voices") is not None:
+            device.voices = int(params["voices"])
+        if params.get("retrigger") is not None:
+            device.retrigger = bool(params["retrigger"])
+        sample = device.sample
+        sample_keys = ("slicing_style", "slicing_sensitivity", "slicing_beat_division",
+                       "slicing_region_count", "warping", "warp_mode", "start_marker",
+                       "end_marker", "gain")
+        if any(params.get(k) is not None for k in sample_keys):
+            if sample is None:
+                raise ValueError("Simpler has no sample loaded")
+            if params.get("slicing_style") is not None:
+                sample.slicing_style = self._pick_name(self.SLICING_STYLES, params["slicing_style"], "slicing_style")
+            if params.get("slicing_sensitivity") is not None:
+                sample.slicing_sensitivity = float(params["slicing_sensitivity"])
+            if params.get("slicing_beat_division") is not None:
+                sample.slicing_beat_division = int(params["slicing_beat_division"])
+            if params.get("slicing_region_count") is not None:
+                sample.slicing_region_count = int(params["slicing_region_count"])
+            if params.get("warping") is not None:
+                sample.warping = bool(params["warping"])
+            if params.get("warp_mode") is not None:
+                sample.warp_mode = self._pick_name(self.WARP_MODES, params["warp_mode"], "warp_mode")
+            if params.get("end_marker") is not None:
+                sample.end_marker = int(params["end_marker"])
+            if params.get("start_marker") is not None:
+                sample.start_marker = int(params["start_marker"])
+            if params.get("gain") is not None:
+                sample.gain = max(0.0, min(1.0, float(params["gain"])))
+        return self._get_simpler(params)
+
+    def _simpler_slices(self, params):
+        """action: 'clear' (remove all manual slices), 'reset' (back to the
+        style's automatic slices), 'insert' / 'remove' (list of sample times
+        or seconds), 'move' (pairs of [from, to])."""
+        device = self._simpler(params)
+        sample = device.sample
+        if sample is None:
+            raise ValueError("Simpler has no sample loaded")
+        sr = float(sample.sample_rate) or 44100.0
+        unit = params.get("unit", "samples")
+
+        def to_samples(t):
+            return int(round(float(t) * sr)) if unit == "seconds" else int(t)
+
+        action = params.get("action")
+        if action == "clear":
+            sample.clear_slices()
+        elif action == "reset":
+            sample.reset_slices()
+        elif action == "insert":
+            for t in params.get("times", []):
+                sample.insert_slice(to_samples(t))
+        elif action == "remove":
+            for t in params.get("times", []):
+                sample.remove_slice(to_samples(t))
+        elif action == "move":
+            for a, b in params.get("moves", []):
+                sample.move_slice(to_samples(a), to_samples(b))
+        else:
+            raise ValueError("action must be clear, reset, insert, remove or move")
+        return self._get_simpler(params)
+
+    def _simpler_sample_action(self, params):
+        """One-shot edits: 'reverse', 'crop', 'warp_double', 'warp_half'."""
+        device = self._simpler(params)
+        action = params.get("action")
+        if action not in ("reverse", "crop", "warp_double", "warp_half"):
+            raise ValueError("action must be reverse, crop, warp_double or warp_half")
+        getattr(device, action)()
+        return self._get_simpler(params)
 
     def _reload_script(self, params):
         """Re-import this file and swap the running instance onto the new class,

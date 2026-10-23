@@ -1,6 +1,6 @@
 [project]
 name = "ableton12-mcp"
-version = "0.4.0"
+version = "0.5.0"
 description = "Full-control MCP server for Ableton Live 12 (devices, parameters, mixer, clips, scenes, transport, arrangement capture)"
 readme = "README.md"
 requires-python = ">=3.10"

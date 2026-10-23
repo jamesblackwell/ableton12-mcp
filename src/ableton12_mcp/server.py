@@ -831,6 +831,95 @@ def set_song_scale(ctx: Context, root: Union[str, int, None] = None,
 
 
 @mcp.tool()
+def describe_device(ctx: Context, track_index: int, device_index: int,
+                    track: Union[int, str, None] = None) -> str:
+    """Diagnostic: list a device's Live Object Model attributes and simple
+    values (plus its sample's, for Simpler). Use to discover what the API exposes."""
+    params: Dict[str, Any] = {"device_index": device_index}
+    params.update(_track_key(track_index, track))
+    return _send_json("describe_device", params, "describing device")
+
+
+@mcp.tool()
+def simpler_load_sample(ctx: Context, track_index: int, device_index: int, path: str) -> str:
+    """Load an audio file (absolute path) into an existing Simpler, replacing
+    its sample. Load Simpler first (instruments → Simpler) on a MIDI track."""
+    return _send_json("simpler_load_sample",
+                      {"track_index": track_index, "device_index": device_index, "path": path},
+                      "loading sample into Simpler")
+
+
+@mcp.tool()
+def get_simpler(ctx: Context, track_index: int, device_index: int) -> str:
+    """Read Simpler: playback mode (Classic / One-Shot / Slicing), slice
+    playback (Mono / Poly / Thru), voices, and the sample's markers, warp,
+    gain, slicing style/settings and every slice (index, MIDI note, time).
+    In Slicing mode slice i plays from MIDI note 36 + i (C1 upward)."""
+    return _send_json("get_simpler", {"track_index": track_index, "device_index": device_index},
+                      "reading Simpler")
+
+
+@mcp.tool()
+def set_simpler(
+    ctx: Context,
+    track_index: int,
+    device_index: int,
+    playback_mode: Optional[str] = None,
+    slicing_style: Optional[str] = None,
+    slicing_playback_mode: Optional[str] = None,
+    slicing_sensitivity: Optional[float] = None,
+    slicing_beat_division: Optional[int] = None,
+    slicing_region_count: Optional[int] = None,
+    voices: Optional[int] = None,
+    retrigger: Optional[bool] = None,
+    warping: Optional[bool] = None,
+    warp_mode: Optional[str] = None,
+    start_marker: Optional[int] = None,
+    end_marker: Optional[int] = None,
+    gain: Optional[float] = None,
+) -> str:
+    """Configure Simpler. playback_mode: Classic / One-Shot / Slicing.
+    slicing_style: Transient / Beat / Region / Manual. slicing_playback_mode:
+    Mono / Poly / Thru. Markers are in samples (see get_simpler). gain 0..1."""
+    params: Dict[str, Any] = {"track_index": track_index, "device_index": device_index}
+    for key, val in (("playback_mode", playback_mode), ("slicing_style", slicing_style),
+                     ("slicing_playback_mode", slicing_playback_mode),
+                     ("slicing_sensitivity", slicing_sensitivity),
+                     ("slicing_beat_division", slicing_beat_division),
+                     ("slicing_region_count", slicing_region_count), ("voices", voices),
+                     ("retrigger", retrigger), ("warping", warping), ("warp_mode", warp_mode),
+                     ("start_marker", start_marker), ("end_marker", end_marker), ("gain", gain)):
+        if val is not None:
+            params[key] = val
+    return _send_json("set_simpler", params, "setting Simpler")
+
+
+@mcp.tool()
+def simpler_slices(ctx: Context, track_index: int, device_index: int, action: str,
+                   times: Optional[List[float]] = None, moves: Optional[List[List[float]]] = None,
+                   unit: str = "samples") -> str:
+    """Edit Simpler slices. action: 'clear', 'reset', 'insert' / 'remove'
+    (times), or 'move' (moves = [[from, to], ...]). unit: 'samples' or
+    'seconds'. Use Manual slicing_style for hand-placed slices. A slice at
+    time 0 always exists."""
+    params: Dict[str, Any] = {"track_index": track_index, "device_index": device_index,
+                              "action": action, "unit": unit}
+    if times is not None:
+        params["times"] = times
+    if moves is not None:
+        params["moves"] = moves
+    return _send_json("simpler_slices", params, "editing Simpler slices")
+
+
+@mcp.tool()
+def simpler_sample_action(ctx: Context, track_index: int, device_index: int, action: str) -> str:
+    """Apply a one-shot Simpler edit: 'reverse', 'crop', 'warp_double' or 'warp_half'."""
+    return _send_json("simpler_sample_action",
+                      {"track_index": track_index, "device_index": device_index, "action": action},
+                      "applying Simpler action")
+
+
+@mcp.tool()
 def reload_script(ctx: Context) -> str:
     """Reload the Remote Script's handlers inside Live after running install.sh,
     without restarting Live. Restart Live if the socket/server code changed."""

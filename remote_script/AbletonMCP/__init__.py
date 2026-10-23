@@ -27,7 +27,7 @@ try:
 except ImportError:
     import queue  # Python 3
 
-__version__ = "0.2.0"
+__version__ = "0.3.0"
 
 DEFAULT_PORT = 9877
 HOST = "localhost"
@@ -260,6 +260,11 @@ class AbletonMCP(ControlSurface):
             "set_track_color": self._set_track_color,
             "get_track_meter": self._get_track_meter,
             "get_master_meter": lambda p: self._get_track_meter({"track": "master"}),
+            # routing & sidechain
+            "get_track_routing": self._get_track_routing,
+            "set_track_routing": self._set_track_routing,
+            "get_device_routing": self._get_device_routing,
+            "set_device_sidechain": self._set_device_sidechain,
             # tracks
             "create_audio_track": self._create_audio_track,
             "create_return_track": self._create_return_track,
@@ -692,6 +697,153 @@ class AbletonMCP(ControlSurface):
             "output_meter_level": getattr(track, "output_meter_level", None),
             "is_playing": self._song.is_playing,
         }
+
+    # ---- routing & sidechain ----
+    # Live exposes routing as RoutingType / RoutingChannel objects: read the
+    # available_* tuple, then assign one of its members. Choosing a type
+    # rebuilds the channel list, so the type is always written before the channel.
+    # Tracks use input_/output_routing_*. Compressor exposes its sidechain source
+    # as input_routing_* on the device; Max devices use DeviceIO routing_*.
+
+    MONITORING = ("in", "auto", "off")
+
+    def _routing_names(self, items):
+        return [str(getattr(it, "display_name", it)) for it in (items or [])]
+
+    def _routing_name(self, item):
+        return None if item is None else str(getattr(item, "display_name", item))
+
+    def _pick_routing(self, available, wanted, what):
+        """Match a RoutingType/Channel by display name: exact, then ignoring a
+        leading track number ("1-KICK" == "KICK"), then a unique substring."""
+        items = list(available or [])
+        names = self._routing_names(items)
+        key = str(wanted).strip().lower()
+
+        def bare(n):
+            head, sep, tail = n.partition("-")
+            return tail if sep and head.strip().isdigit() else n
+
+        for test in (lambda n: n.lower() == key,
+                     lambda n: bare(n).strip().lower() == key):
+            hits = [it for it, n in zip(items, names) if test(n)]
+            if len(hits) == 1:
+                return hits[0]
+        hits = [it for it, n in zip(items, names) if key in n.lower()]
+        if len(hits) == 1:
+            return hits[0]
+        if hits:
+            raise ValueError("%s '%s' is ambiguous: %s"
+                             % (what, wanted, [self._routing_name(h) for h in hits]))
+        raise ValueError("No %s matching '%s'. Available: %s" % (what, wanted, names))
+
+    def _routing_side(self, obj, type_attr, chan_attr):
+        if not hasattr(obj, type_attr):
+            return None
+        return {
+            "type": self._routing_name(getattr(obj, type_attr, None)),
+            "channel": self._routing_name(getattr(obj, chan_attr, None)),
+            "available_types": self._routing_names(getattr(obj, "available_" + type_attr + "s", [])),
+            "available_channels": self._routing_names(getattr(obj, "available_" + chan_attr + "s", [])),
+        }
+
+    def _write_routing(self, obj, type_attr, chan_attr, type_name, chan_name, what):
+        if type_name is not None:
+            setattr(obj, type_attr, self._pick_routing(
+                getattr(obj, "available_" + type_attr + "s"), type_name, what + " type"))
+        if chan_name is not None:
+            setattr(obj, chan_attr, self._pick_routing(
+                getattr(obj, "available_" + chan_attr + "s"), chan_name, what + " channel"))
+
+    def _get_track_routing(self, params):
+        track = self._track_spec(params)
+        out = {
+            "track": params.get("track", params.get("track_index", 0)),
+            "name": track.name,
+            "input": self._routing_side(track, "input_routing_type", "input_routing_channel"),
+            "output": self._routing_side(track, "output_routing_type", "output_routing_channel"),
+            "monitoring": None,
+        }
+        state = getattr(track, "current_monitoring_state", None)
+        if state is not None and 0 <= int(state) < len(self.MONITORING):
+            out["monitoring"] = self.MONITORING[int(state)]
+        return out
+
+    def _set_track_routing(self, params):
+        track = self._track_spec(params)
+        if params.get("input_type") is not None or params.get("input_channel") is not None:
+            if not hasattr(track, "input_routing_type"):
+                raise ValueError("Track '%s' has no input routing" % track.name)
+            self._write_routing(track, "input_routing_type", "input_routing_channel",
+                                params.get("input_type"), params.get("input_channel"), "input")
+        if params.get("output_type") is not None or params.get("output_channel") is not None:
+            self._write_routing(track, "output_routing_type", "output_routing_channel",
+                                params.get("output_type"), params.get("output_channel"), "output")
+        if params.get("monitoring") is not None:
+            mode = str(params["monitoring"]).strip().lower()
+            if mode not in self.MONITORING:
+                raise ValueError("monitoring must be one of %s" % (self.MONITORING,))
+            if not hasattr(track, "current_monitoring_state"):
+                raise ValueError("Track '%s' has no monitoring switch" % track.name)
+            track.current_monitoring_state = self.MONITORING.index(mode)
+        return self._get_track_routing(params)
+
+    def _device_inputs(self, device):
+        """Return (label, obj, type_attr, chan_attr) for each routable device input."""
+        found = []
+        if hasattr(device, "input_routing_type"):
+            found.append(("sidechain", device, "input_routing_type", "input_routing_channel"))
+        for i, io in enumerate(getattr(device, "audio_inputs", None) or []):
+            if hasattr(io, "routing_type"):
+                found.append(("audio_input:%d" % i, io, "routing_type", "routing_channel"))
+        return found
+
+    def _sidechain_switch(self, device):
+        for p in device.parameters:
+            if p.name.lower() in ("s/c on", "sidechain on", "sidechain"):
+                return p
+        return None
+
+    def _get_device_routing(self, params):
+        device = self._device_on(self._track_spec(params), params["device_index"])
+        inputs = []
+        for label, obj, type_attr, chan_attr in self._device_inputs(device):
+            side = self._routing_side(obj, type_attr, chan_attr)
+            side["input"] = label
+            inputs.append(side)
+        switch = self._sidechain_switch(device)
+        return {
+            "device_index": params["device_index"],
+            "device_name": device.name,
+            "class_name": device.class_name,
+            "inputs": inputs,
+            "sidechain_on": None if switch is None else bool(switch.value),
+            "note": None if inputs else
+                    "Live's API exposes no sidechain routing for this device",
+        }
+
+    def _set_device_sidechain(self, params):
+        device = self._device_on(self._track_spec(params), params["device_index"])
+        inputs = self._device_inputs(device)
+        if not inputs:
+            raise ValueError("Device '%s' (%s) has no routable sidechain input in Live's API"
+                             % (device.name, device.class_name))
+        label = params.get("input")
+        target = inputs[0]
+        if label is not None:
+            matches = [i for i in inputs if i[0] == label]
+            if not matches:
+                raise ValueError("No input '%s'. Available: %s" % (label, [i[0] for i in inputs]))
+            target = matches[0]
+        _, obj, type_attr, chan_attr = target
+        self._write_routing(obj, type_attr, chan_attr,
+                            params.get("source"), params.get("tap"), "sidechain")
+        if params.get("enabled") is not None:
+            switch = self._sidechain_switch(device)
+            if switch is None:
+                raise ValueError("Device '%s' has no sidechain on/off parameter" % device.name)
+            switch.value = switch.max if params["enabled"] else switch.min
+        return self._get_device_routing(params)
 
     # ---- devices & parameters ----
 

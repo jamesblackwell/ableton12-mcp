@@ -640,6 +640,103 @@ def set_track_color(ctx: Context, track_index: int, color: int) -> str:
 
 
 # --------------------------------------------------------------------------- #
+# Routing & sidechain
+# --------------------------------------------------------------------------- #
+
+@mcp.tool()
+def get_track_routing(ctx: Context, track_index: int = 0, track: Union[int, str, None] = None) -> str:
+    """Read a track's audio/MIDI input and output routing plus its monitoring
+    state ('in' / 'auto' / 'off'). Each side lists the current type/channel and
+    every available option name, ready for set_track_routing.
+    track='master'/'return:N' targets those tracks (they have no input)."""
+    try:
+        result = get_ableton_connection().send_command("get_track_routing", _track_key(track_index, track))
+        return json.dumps(result, indent=2)
+    except Exception as e:
+        return _err("getting track routing", e)
+
+
+@mcp.tool()
+def set_track_routing(
+    ctx: Context,
+    track_index: int = 0,
+    input_type: Optional[str] = None,
+    input_channel: Optional[str] = None,
+    output_type: Optional[str] = None,
+    output_channel: Optional[str] = None,
+    monitoring: Optional[str] = None,
+    track: Union[int, str, None] = None,
+) -> str:
+    """Set a track's routing ("Audio From" / "Audio To" and their channel
+    choosers) and monitoring. Names match get_track_routing's available lists
+    (case-insensitive; a leading track number may be omitted, a unique
+    substring also works). The type is applied before the channel.
+
+    monitoring: 'in', 'auto' or 'off'. 'in' plays live input through the
+    speakers and can cause feedback, so only set it when explicitly asked.
+    Returns the resulting routing."""
+    try:
+        params: Dict[str, Any] = _track_key(track_index, track)
+        for key, val in (("input_type", input_type), ("input_channel", input_channel),
+                         ("output_type", output_type), ("output_channel", output_channel),
+                         ("monitoring", monitoring)):
+            if val is not None:
+                params[key] = val
+        result = get_ableton_connection().send_command("set_track_routing", params)
+        return json.dumps(result, indent=2)
+    except Exception as e:
+        return _err("setting track routing", e)
+
+
+@mcp.tool()
+def get_device_routing(ctx: Context, track_index: int, device_index: int,
+                       track: Union[int, str, None] = None) -> str:
+    """Read a device's sidechain input routing (e.g. Compressor's sidechain
+    "Audio From" source and tap point) and whether its sidechain is on.
+    'inputs' is empty when Live's API exposes no sidechain routing for the device."""
+    try:
+        params = {"device_index": device_index}
+        params.update(_track_key(track_index, track))
+        result = get_ableton_connection().send_command("get_device_routing", params)
+        return json.dumps(result, indent=2)
+    except Exception as e:
+        return _err("getting device routing", e)
+
+
+@mcp.tool()
+def set_device_sidechain(
+    ctx: Context,
+    track_index: int,
+    device_index: int,
+    source: Optional[str] = None,
+    tap: Optional[str] = None,
+    enabled: Optional[bool] = None,
+    input: Optional[str] = None,
+    track: Union[int, str, None] = None,
+) -> str:
+    """Route a device's sidechain, e.g. duck a bass Compressor from the kick.
+
+    - source: the sidechain "Audio From" type, usually a track name ("KICK").
+    - tap: the channel/tap point, e.g. "Post FX", "Pre FX", "Post Mixer", or
+      a Drum Rack chain. Read get_device_routing after choosing the source:
+      the channel list depends on it.
+    - enabled: switch the sidechain on/off (Compressor's 'S/C On').
+    - input: which device input to route ('sidechain' or 'audio_input:N');
+      defaults to the first one.
+    Returns the resulting device routing."""
+    try:
+        params: Dict[str, Any] = {"device_index": device_index}
+        params.update(_track_key(track_index, track))
+        for key, val in (("source", source), ("tap", tap), ("enabled", enabled), ("input", input)):
+            if val is not None:
+                params[key] = val
+        result = get_ableton_connection().send_command("set_device_sidechain", params)
+        return json.dumps(result, indent=2)
+    except Exception as e:
+        return _err("setting device sidechain", e)
+
+
+# --------------------------------------------------------------------------- #
 # Tracks (structure)
 # --------------------------------------------------------------------------- #
 

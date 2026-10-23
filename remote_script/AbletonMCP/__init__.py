@@ -27,7 +27,7 @@ try:
 except ImportError:
     import queue  # Python 3
 
-__version__ = "0.3.0"
+__version__ = "0.4.0"
 
 DEFAULT_PORT = 9877
 HOST = "localhost"
@@ -292,8 +292,17 @@ class AbletonMCP(ControlSurface):
             "set_session_record": self._set_session_record,
             "set_clip_trigger_quantization": self._set_clip_trigger_quantization,
             "set_back_to_arranger": self._set_back_to_arranger,
+            # audio clips, clip copy, scenes, scale
+            "get_clip_info": self._get_clip_info,
+            "set_audio_clip": self._set_audio_clip,
+            "copy_clip": self._copy_clip,
+            "get_scenes": self._get_scenes,
+            "set_scene_color": self._set_scene_color,
+            "get_song_scale": self._get_song_scale,
+            "set_song_scale": self._set_song_scale,
             # diagnostics
             "health": self._health,
+            "reload_script": self._reload_script,
         }
 
     # ----------------------------------------------------------- validators
@@ -844,6 +853,119 @@ class AbletonMCP(ControlSurface):
                 raise ValueError("Device '%s' has no sidechain on/off parameter" % device.name)
             switch.value = switch.max if params["enabled"] else switch.min
         return self._get_device_routing(params)
+
+    # ---- audio clips, clip copy, scenes, scale ----
+
+    WARP_MODES = ("Beats", "Tones", "Texture", "Re-Pitch", "Complex", "REX", "Complex Pro")
+    NOTE_NAMES = ("C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B")
+
+    def _get_clip_info(self, params):
+        clip = self._clip_at(params["track_index"], params["clip_index"])
+        info = {
+            "name": clip.name, "length": clip.length, "is_audio_clip": bool(clip.is_audio_clip),
+            "looping": clip.looping, "loop_start": clip.loop_start, "loop_end": clip.loop_end,
+            "start_marker": clip.start_marker, "end_marker": clip.end_marker,
+            "muted": bool(getattr(clip, "muted", False)), "color": clip.color,
+        }
+        if clip.is_audio_clip:
+            mode = int(clip.warp_mode)
+            info.update({
+                "file_path": getattr(clip, "file_path", None),
+                "warping": bool(clip.warping),
+                "warp_mode": self.WARP_MODES[mode] if 0 <= mode < len(self.WARP_MODES) else mode,
+                "pitch_coarse": clip.pitch_coarse, "pitch_fine": clip.pitch_fine,
+                "gain": clip.gain, "gain_display": getattr(clip, "gain_display_string", None),
+            })
+        return info
+
+    def _set_audio_clip(self, params):
+        clip = self._clip_at(params["track_index"], params["clip_index"])
+        if not clip.is_audio_clip:
+            raise ValueError("Clip '%s' is not an audio clip" % clip.name)
+        if params.get("warping") is not None:
+            clip.warping = bool(params["warping"])
+        if params.get("warp_mode") is not None:
+            mode = params["warp_mode"]
+            if isinstance(mode, str):
+                names = [m.lower() for m in self.WARP_MODES]
+                if mode.strip().lower() not in names:
+                    raise ValueError("warp_mode must be one of %s" % (self.WARP_MODES,))
+                mode = names.index(mode.strip().lower())
+            if int(mode) not in [int(m) for m in clip.available_warp_modes]:
+                raise ValueError("Warp mode %s not available for this clip" % self.WARP_MODES[int(mode)])
+            clip.warp_mode = int(mode)
+        if params.get("pitch_coarse") is not None:
+            clip.pitch_coarse = int(params["pitch_coarse"])
+        if params.get("pitch_fine") is not None:
+            clip.pitch_fine = float(params["pitch_fine"])
+        if params.get("gain") is not None:
+            clip.gain = max(0.0, min(1.0, float(params["gain"])))
+        return self._get_clip_info(params)
+
+    def _copy_clip(self, params):
+        """Copy a Session clip into any empty slot (same or another track of the
+        same type); move=True deletes the source afterwards."""
+        src_track = self._get_track(params["track_index"])
+        src = src_track.clip_slots[params["clip_index"]]
+        if not src.has_clip:
+            raise ValueError("No clip in source slot")
+        dst_track = self._get_track(params.get("to_track_index", params["track_index"]))
+        ti = params["to_clip_index"]
+        if ti < 0 or ti >= len(dst_track.clip_slots):
+            raise IndexError("Target slot %d out of range" % ti)
+        dst = dst_track.clip_slots[ti]
+        if dst.has_clip:
+            raise ValueError("Target slot %d on '%s' is not empty" % (ti, dst_track.name))
+        src.duplicate_clip_to(dst)
+        if params.get("move"):
+            src.delete_clip()
+        return {"copied": dst.clip.name, "to_track": dst_track.name, "to_clip_index": ti,
+                "moved": bool(params.get("move"))}
+
+    def _get_scenes(self, params):
+        out = []
+        for i, sc in enumerate(self._song.scenes):
+            out.append({"index": i, "name": sc.name, "color": sc.color,
+                        "is_empty": bool(getattr(sc, "is_empty", False))})
+        return {"scenes": out}
+
+    def _set_scene_color(self, params):
+        sc = self._song.scenes[params["scene_index"]]
+        sc.color = int(params.get("color", 0))
+        return {"color": sc.color}
+
+    def _get_song_scale(self, params):
+        s = self._song
+        root = int(getattr(s, "root_note", 0))
+        return {"root_note": root, "root_name": self.NOTE_NAMES[root % 12],
+                "scale_name": str(getattr(s, "scale_name", "")),
+                "scale_mode": bool(getattr(s, "scale_mode", False))}
+
+    def _set_song_scale(self, params):
+        s = self._song
+        if params.get("root") is not None:
+            root = params["root"]
+            if isinstance(root, str):
+                root = self.NOTE_NAMES.index(root.strip().upper())
+            s.root_note = int(root) % 12
+        if params.get("scale_name") is not None:
+            s.scale_name = str(params["scale_name"])
+        if params.get("scale_mode") is not None:
+            s.scale_mode = bool(params["scale_mode"])
+        return self._get_song_scale(params)
+
+    def _reload_script(self, params):
+        """Re-import this file and swap the running instance onto the new class,
+        so handler changes load without restarting Live. The socket server keeps
+        running; restart Live if __init__/server code itself changed."""
+        import importlib
+        import sys
+        module = sys.modules[type(self).__module__]
+        old = __version__
+        module = importlib.reload(module)
+        self.__class__ = module.AbletonMCP
+        self._dispatch = self._build_dispatch()
+        return {"reloaded": True, "from_version": old, "version": module.__version__}
 
     # ---- devices & parameters ----
 

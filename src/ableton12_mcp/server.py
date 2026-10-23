@@ -737,6 +737,100 @@ def set_device_sidechain(
 
 
 # --------------------------------------------------------------------------- #
+# Audio clips, clip copy, scenes, scale, script reload
+# --------------------------------------------------------------------------- #
+
+def _send_json(command: str, params: Dict[str, Any], action: str) -> str:
+    try:
+        return json.dumps(get_ableton_connection().send_command(command, params), indent=2)
+    except Exception as e:
+        return _err(action, e)
+
+
+@mcp.tool()
+def get_clip_info(ctx: Context, track_index: int, clip_index: int) -> str:
+    """Read a Session clip's loop/markers and, for audio clips, its file path,
+    warping, warp mode, transpose (pitch_coarse semitones, pitch_fine cents)
+    and clip gain."""
+    return _send_json("get_clip_info", {"track_index": track_index, "clip_index": clip_index},
+                      "getting clip info")
+
+
+@mcp.tool()
+def set_audio_clip(
+    ctx: Context,
+    track_index: int,
+    clip_index: int,
+    warping: Optional[bool] = None,
+    warp_mode: Union[str, int, None] = None,
+    pitch_coarse: Optional[int] = None,
+    pitch_fine: Optional[float] = None,
+    gain: Optional[float] = None,
+) -> str:
+    """Change an audio clip's Warp settings, transpose and gain.
+    warp_mode: 'Beats', 'Tones', 'Texture', 'Re-Pitch', 'Complex', 'REX' or
+    'Complex Pro' (best for vocals). pitch_coarse: -48..48 semitones;
+    pitch_fine: -50..50 cents. gain: 0..1 (read gain_display for dB)."""
+    params: Dict[str, Any] = {"track_index": track_index, "clip_index": clip_index}
+    for key, val in (("warping", warping), ("warp_mode", warp_mode), ("pitch_coarse", pitch_coarse),
+                     ("pitch_fine", pitch_fine), ("gain", gain)):
+        if val is not None:
+            params[key] = val
+    return _send_json("set_audio_clip", params, "setting audio clip")
+
+
+@mcp.tool()
+def copy_clip(ctx: Context, track_index: int, clip_index: int, to_clip_index: int,
+              to_track_index: Optional[int] = None, move: bool = False) -> str:
+    """Copy a Session clip into an empty slot (another scene row and/or another
+    track of the same kind). move=True removes the original. The target slot
+    must be empty."""
+    params: Dict[str, Any] = {"track_index": track_index, "clip_index": clip_index,
+                              "to_clip_index": to_clip_index, "move": move}
+    if to_track_index is not None:
+        params["to_track_index"] = to_track_index
+    return _send_json("copy_clip", params, "copying clip")
+
+
+@mcp.tool()
+def get_scenes(ctx: Context) -> str:
+    """List Session scenes with index, name, color and whether they are empty."""
+    return _send_json("get_scenes", {}, "getting scenes")
+
+
+@mcp.tool()
+def set_scene_color(ctx: Context, scene_index: int, color: int) -> str:
+    """Set a scene's color as a packed RGB integer (0xRRGGBB)."""
+    return _send_json("set_scene_color", {"scene_index": scene_index, "color": color},
+                      "setting scene color")
+
+
+@mcp.tool()
+def get_song_scale(ctx: Context) -> str:
+    """Read the Set's Scale (root note, scale name, Scale Mode on/off)."""
+    return _send_json("get_song_scale", {}, "getting song scale")
+
+
+@mcp.tool()
+def set_song_scale(ctx: Context, root: Union[str, int, None] = None,
+                   scale_name: Optional[str] = None, scale_mode: Optional[bool] = None) -> str:
+    """Set the Set's Scale: root as a note name ('A') or 0-11, scale_name as
+    shown in Live (e.g. 'Minor'), scale_mode to toggle Scale Mode."""
+    params: Dict[str, Any] = {}
+    for key, val in (("root", root), ("scale_name", scale_name), ("scale_mode", scale_mode)):
+        if val is not None:
+            params[key] = val
+    return _send_json("set_song_scale", params, "setting song scale")
+
+
+@mcp.tool()
+def reload_script(ctx: Context) -> str:
+    """Reload the Remote Script's handlers inside Live after running install.sh,
+    without restarting Live. Restart Live if the socket/server code changed."""
+    return _send_json("reload_script", {}, "reloading script")
+
+
+# --------------------------------------------------------------------------- #
 # Tracks (structure)
 # --------------------------------------------------------------------------- #
 

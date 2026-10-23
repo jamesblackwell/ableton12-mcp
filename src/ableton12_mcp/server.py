@@ -429,6 +429,7 @@ def set_device_parameter(
     value: Union[float, str, None] = None,
     value_normalized: Optional[float] = None,
     track: Union[int, str, None] = None,
+    display_target: Optional[float] = None,
 ) -> str:
     """Set one device parameter — this is how you change a sound's tone.
 
@@ -439,18 +440,24 @@ def set_device_parameter(
     - value_normalized: alternative to value, a 0.0-1.0 fraction mapped to
       min + x*(max-min); for quantized params it picks the value_items index.
 
-    Provide exactly one of value / value_normalized. The reply reports the
+    - display_target: the number as Live displays it, in the display's own
+      units (dB, Hz, ms, %, ratio), e.g. -20 for "-20 dB" or 150 for "150 ms".
+      Use this for continuous params whose raw value is not in display units.
+
+    Provide exactly one of value / value_normalized / display_target. The reply reports the
     resulting display_value and whether the write applied (a parameter driven
     by a macro is not writable)."""
     try:
         params: Dict[str, Any] = {"device_index": device_index, "parameter": parameter}
         params.update(_track_key(track_index, track))
-        if value_normalized is not None:
+        if display_target is not None:
+            params["display_target"] = display_target
+        elif value_normalized is not None:
             params["value_normalized"] = value_normalized
         elif value is not None:
             params["value"] = value
         else:
-            return "Error: provide either 'value' or 'value_normalized'"
+            return "Error: provide 'value', 'value_normalized' or 'display_target'"
         r = get_ableton_connection().send_command("set_device_parameter", params)
         applied = "" if r.get("applied", True) else f" (NOT applied: {r.get('message')})"
         where = track if track is not None else track_index

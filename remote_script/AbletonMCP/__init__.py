@@ -417,6 +417,38 @@ class AbletonMCP(ControlSurface):
         names = ", ".join(p.name for p in params)
         raise ValueError("No parameter named '%s'. Available: %s" % (selector, names))
 
+    def _display_number(self, p, value):
+        """Parse a parameter's display string at `value` into a comparable
+        number: kHz -> Hz, s -> ms, -inf/inf kept."""
+        import re
+        text = str(p.str_for_value(value)).replace(" ", "")
+        if "inf" in text:
+            return float("-inf") if text.startswith("-") else float("inf")
+        m = re.match(r"[-+]?\d*\.?\d+", text)
+        if not m:
+            raise ValueError("Display '%s' is not numeric" % text)
+        num = float(m.group())
+        if "kHz" in text:
+            num *= 1000.0
+        elif text.endswith("s") and not text.endswith("ms"):
+            num *= 1000.0
+        return num
+
+    def _search_display(self, p, target, write):
+        """Binary-search the raw value whose display reads `target` (in the
+        display's own units: dB, Hz, ms, %, ratio). Works for monotonic params."""
+        lo, hi = p.min, p.max
+        rising = self._display_number(p, hi) >= self._display_number(p, lo)
+        for _ in range(40):
+            mid = (lo + hi) / 2.0
+            if (self._display_number(p, mid) < target) == rising:
+                lo = mid
+            else:
+                hi = mid
+        if write:
+            p.value = hi
+        return hi
+
     def _write_param(self, p, params):
         """Resolve and write a value to a DeviceParameter.
 
@@ -427,6 +459,9 @@ class AbletonMCP(ControlSurface):
         """
         enabled = bool(getattr(p, "is_enabled", True))
 
+        if params.get("display_target") is not None and not p.is_quantized:
+            target = self._search_display(p, float(params["display_target"]), enabled)
+            return enabled, target
         if params.get("value_normalized") is not None:
             x = float(params["value_normalized"])
             x = max(0.0, min(1.0, x))
@@ -449,7 +484,7 @@ class AbletonMCP(ControlSurface):
             else:
                 target = float(raw)
         else:
-            raise ValueError("No value or value_normalized provided")
+            raise ValueError("No value, value_normalized or display_target provided")
 
         target = max(p.min, min(p.max, target))
         if enabled:
